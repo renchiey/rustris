@@ -33,4 +33,12 @@ body {
   height: 30px;
   width: 30px;
   border: 1px solid black;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.block {
+  width: 90%;
+  height: 90%;
 }
