@@ -71,7 +71,7 @@ pub fn get_smash_start() -> [Position; 4] {
     ]
 }
 
-pub fn get_color(block_type: BlockType) -> String {
+pub fn get_color(block_type: &BlockType) -> String {
     match block_type {
         BlockType::None => "transparent".to_string(),
         BlockType::Hero => "#1c82d6".to_string(),

@@ -1,5 +1,10 @@
-use leptos::{ev::keydown, logging, prelude::*};
-use leptos_use::use_event_listener;
+use leptos::{
+    ev::keydown,
+    leptos_dom::logging::console_log,
+    logging::{self, log},
+    prelude::*,
+};
+use leptos_use::{use_event_listener, use_interval_fn, utils::Pausable};
 use rand::Rng;
 use reactive_stores::Store;
 
@@ -227,21 +232,60 @@ fn Game() -> impl IntoView {
         },
     );
 
+    // interval to check if the block has reached the lowest it can go
+    let Pausable {
+        pause,
+        resume,
+        is_active,
+    } = use_interval_fn(
+        move || {
+            console_log("hello");
+            let blocks = active_block.get().blocks;
+
+            let playfield = state.get().playfield;
+
+            for point in blocks.iter() {
+                if point.0 == (PLAYFIELD_HEIGHT - 1) as i8
+                    || !matches!(
+                        playfield[(point.0 + 1) as usize][point.1 as usize],
+                        BlockType::None
+                    )
+                {
+                    console_log("here");
+                    let mut new_playfield = playfield;
+                    for point in blocks.iter() {
+                        new_playfield[point.0 as usize][point.1 as usize] =
+                            active_block.get().block_type;
+                    }
+
+                    log!("{:?}", new_playfield);
+
+                    set_state.set(GlobalState {
+                        playfield: new_playfield,
+                        active_block: Block::get_random(),
+                    });
+                    set_active_block.set(Block::get_random());
+                }
+            }
+        },
+        500,
+    );
+
     view! {
       <div class:playfield>
         {move || {
           state
             .get()
             .playfield
-            .into_iter()
+            .iter()
             .enumerate()
             .map(|(r_i, r)| {
               view! {
                 <div class:row>
                   {r
-                    .into_iter()
+                    .iter()
                     .enumerate()
-                    .map(|(c_i, _)| {
+                    .map(|(c_i, c)| {
                       view! {
                         <div class="cell">
                           {move || {
@@ -253,9 +297,16 @@ fn Game() -> impl IntoView {
                                     class="block"
                                     style=(
                                       "background-color",
-                                      move || get_color(active_block.get().block_type),
+                                      move || get_color(&active_block.get().block_type),
                                     )
                                   ></div>
+                                },
+                              )
+                            } else if !matches!(c, BlockType::None) {
+                              let color = get_color(c);
+                              Some(
+                                view! {
+                                  <div class="block" style=("background-color", &color)></div>
                                 },
                               )
                             } else {
