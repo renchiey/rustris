@@ -1,10 +1,11 @@
+use std::{cell::RefCell, rc::Rc};
+
 use leptos::{
-    ev::keydown,
-    leptos_dom::logging::console_log,
-    logging::{self, log},
+    ev::{keydown, keyup},
+    logging::{self},
     prelude::*,
 };
-use leptos_use::{use_event_listener, use_interval_fn, utils::Pausable};
+use leptos_use::{use_event_listener, use_interval_fn};
 use rand::Rng;
 use reactive_stores::Store;
 
@@ -139,7 +140,13 @@ impl Block {
             .map(|point| Position(point.0, point.1 - 1));
 
         for point in transformation.iter() {
-            if point.1 < 0 {
+            if point.1 < 0
+                || (point.1 > 0
+                    && !matches!(
+                        playfield[point.0 as usize][point.1 as usize],
+                        BlockType::None,
+                    ))
+            {
                 return self.to_owned();
             }
         }
@@ -155,7 +162,13 @@ impl Block {
             .map(|point| Position(point.0, point.1 + 1));
 
         for point in transformation.iter() {
-            if point.1 >= PLAYFIELD_WIDTH as i8 {
+            if point.1 >= PLAYFIELD_WIDTH as i8
+                || (point.1 < (PLAYFIELD_WIDTH - 1) as i8
+                    && !matches!(
+                        playfield[point.0 as usize][point.1 as usize],
+                        BlockType::None,
+                    ))
+            {
                 return self.to_owned();
             }
         }
@@ -170,6 +183,7 @@ impl Block {
 struct GlobalState {
     pub playfield: [[BlockType; 10]; 24],
     pub active_block: Block,
+    pub game_over: bool,
 }
 
 impl GlobalState {
@@ -177,7 +191,86 @@ impl GlobalState {
         GlobalState {
             playfield: [[BlockType::None; PLAYFIELD_WIDTH]; PLAYFIELD_HEIGHT],
             active_block: Block::get_random(),
+            game_over: false,
         }
+    }
+
+    fn rotate_block(&mut self) -> Self {
+        self.active_block = self.active_block.rotate(&self.playfield);
+
+        self.to_owned()
+    }
+
+    fn descend_block(&mut self) -> Self {
+        if self.check_collision() {
+            return self.to_owned();
+        };
+
+        self.active_block = self.active_block.descend(&self.playfield);
+        self.to_owned()
+    }
+
+    fn full_descend_block(&mut self) -> Self {
+        if !self.check_collision() {
+            self.active_block.descend(&self.playfield);
+
+            return self.full_descend_block();
+        }
+
+        self.place_block()
+    }
+
+    fn move_block_left(&mut self) -> Self {
+        self.active_block = self.active_block.move_left(&self.playfield);
+        self.to_owned()
+    }
+
+    fn move_block_right(&mut self) -> Self {
+        self.active_block = self.active_block.move_right(&self.playfield);
+
+        self.to_owned()
+    }
+
+    fn place_block(&mut self) -> Self {
+        let block_type = self.active_block.block_type;
+        self.active_block
+            .blocks
+            .iter()
+            .for_each(|point| self.playfield[point.0 as usize][point.1 as usize] = block_type);
+
+        if self.check_game_over() {
+            self.game_over = true;
+        } else {
+            self.active_block = Block::get_random();
+        }
+
+        self.to_owned()
+    }
+
+    fn check_collision(&self) -> bool {
+        let playfield = self.playfield;
+        for point in self.active_block.blocks.iter() {
+            if point.0 == (PLAYFIELD_HEIGHT - 1) as i8
+                || !matches!(
+                    playfield[(point.0 + 1) as usize][point.1 as usize],
+                    BlockType::None
+                )
+            {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn check_game_over(&self) -> bool {
+        for point in self.active_block.blocks.iter() {
+            if point.0 < 4 {
+                return true;
+            }
+        }
+
+        false
     }
 }
 
@@ -203,72 +296,78 @@ fn App() -> impl IntoView {
 #[component]
 fn Game() -> impl IntoView {
     let (state, set_state) = signal(GlobalState::new());
-    let (active_block, set_active_block) = signal(Block::get_random());
 
-    use_event_listener(
+    let block_place_timer = Rc::new(RefCell::new(0));
+
+    // interval for block descension
+    let block_descend_interval = use_interval_fn(
+        move || {
+            set_state.set(state.get().descend_block());
+        },
+        500,
+    );
+
+    let _ = use_event_listener(
         document().body(),
         keydown,
         move |evt: leptos::ev::KeyboardEvent| {
             logging::log!("key press: {}", &evt.key());
 
-            let playfield = &state.get().playfield;
-            let mut block = active_block.get();
+            let mut s = state.get();
+
+            if s.game_over {
+                return;
+            }
 
             if &evt.key() == "ArrowUp" {
-                set_active_block.set(block.rotate(playfield));
+                set_state.set(s.rotate_block());
             }
 
             if &evt.key() == "ArrowDown" {
-                set_active_block.set(block.descend(playfield));
+                (block_descend_interval.pause)();
+                set_state.set(s.descend_block());
             }
 
             if &evt.key() == "ArrowRight" {
-                set_active_block.set(block.move_right(playfield));
+                set_state.set(s.move_block_right());
             }
 
             if &evt.key() == "ArrowLeft" {
-                set_active_block.set(block.move_left(playfield));
+                set_state.set(s.move_block_left());
+            }
+
+            if &evt.key() == " " {
+                set_state.set(s.full_descend_block());
             }
         },
     );
 
-    // interval to check if the block has reached the lowest it can go
-    let Pausable {
-        pause,
-        resume,
-        is_active,
-    } = use_interval_fn(
-        move || {
-            console_log("hello");
-            let blocks = active_block.get().blocks;
-
-            let playfield = state.get().playfield;
-
-            for point in blocks.iter() {
-                if point.0 == (PLAYFIELD_HEIGHT - 1) as i8
-                    || !matches!(
-                        playfield[(point.0 + 1) as usize][point.1 as usize],
-                        BlockType::None
-                    )
-                {
-                    console_log("here");
-                    let mut new_playfield = playfield;
-                    for point in blocks.iter() {
-                        new_playfield[point.0 as usize][point.1 as usize] =
-                            active_block.get().block_type;
-                    }
-
-                    log!("{:?}", new_playfield);
-
-                    set_state.set(GlobalState {
-                        playfield: new_playfield,
-                        active_block: Block::get_random(),
-                    });
-                    set_active_block.set(Block::get_random());
-                }
+    let _ = use_event_listener(
+        document().body(),
+        keyup,
+        move |evt: leptos::ev::KeyboardEvent| {
+            if &evt.key() == "ArrowDown" {
+                (block_descend_interval.resume)();
             }
         },
-        500,
+    );
+
+    // interval to check for collisions
+    let block_place_timer_clone = Rc::clone(&block_place_timer);
+    let _ = use_interval_fn(
+        move || {
+            if state.get().check_collision() {
+                *block_place_timer_clone.borrow_mut() += 1;
+
+                if *block_place_timer_clone.borrow() == 5 {
+                    set_state.set(state.get().place_block());
+                    *block_place_timer_clone.borrow_mut() = 0;
+                }
+            } else {
+                *block_place_timer_clone.borrow_mut() = 0;
+            }
+        },
+        100,
     );
 
     view! {
@@ -280,44 +379,61 @@ fn Game() -> impl IntoView {
             .iter()
             .enumerate()
             .map(|(r_i, r)| {
-              view! {
-                <div class:row>
-                  {r
-                    .iter()
-                    .enumerate()
-                    .map(|(c_i, c)| {
-                      view! {
-                        <div class="cell">
-                          {move || {
-                            if active_block.get().blocks.contains(&Position(r_i as i8, c_i as i8)) {
-                              Some(
+              if r_i >= 4 {
+                Some(
+                  view! {
+                    <div class:row>
+                      {r
+                        .iter()
+                        .enumerate()
+                        .map(|(c_i, _)| {
+                          view! {
+                            <div class="cell">
+                              {move || {
+                                let active_block = state.get().active_block;
+                                if active_block.blocks.contains(&Position(r_i as i8, c_i as i8)) {
+                                  Some(
 
-                                view! {
-                                  <div
-                                    class="block"
-                                    style=(
-                                      "background-color",
-                                      move || get_color(&active_block.get().block_type),
-                                    )
-                                  ></div>
-                                },
-                              )
-                            } else if !matches!(c, BlockType::None) {
-                              let color = get_color(c);
-                              Some(
-                                view! {
-                                  <div class="block" style=("background-color", &color)></div>
-                                },
-                              )
-                            } else {
-                              None
-                            }
-                          }}
-                        </div>
-                      }
-                    })
-                    .collect_view()}
-                </div>
+                                    view! {
+                                      <div
+                                        class="block"
+                                        style=(
+                                          "background-color",
+                                          move || get_color(active_block.block_type),
+                                        )
+                                      ></div>
+                                    }
+                                      .into_any(),
+                                  )
+                                } else if !matches!(
+                                  state.get().playfield[r_i][c_i],
+                                  BlockType::None
+                                ) {
+                                  Some(
+                                    view! {
+                                      <div
+                                        class="block"
+                                        style=(
+                                          "background-color",
+                                          move || get_color(state.get().playfield[r_i][c_i]),
+                                        )
+                                      ></div>
+                                    }
+                                      .into_any(),
+                                  )
+                                } else {
+                                  None
+                                }
+                              }}
+                            </div>
+                          }
+                        })
+                        .collect_view()}
+                    </div>
+                  },
+                )
+              } else {
+                None
               }
             })
             .collect_view()
