@@ -1,7 +1,4 @@
-use std::{
-    cell::{Cell, RefCell},
-    rc::Rc,
-};
+use std::{cell::Cell, rc::Rc};
 
 use leptos::{
     ev::{keydown, keyup},
@@ -54,6 +51,7 @@ struct Block {
     pub block_type: BlockType,
     pub orientation: Orientation,
     pub blocks: [Position; 4],
+    pub projection: Option<[Position; 4]>,
 }
 
 impl Block {
@@ -77,6 +75,7 @@ impl Block {
             block_type,
             orientation: Orientation::Up,
             blocks,
+            projection: None,
         }
     }
 
@@ -186,7 +185,9 @@ impl Block {
 struct GlobalState {
     pub playfield: [[BlockType; 10]; 24],
     pub active_block: Block,
+    pub projection_blocks: Option<[Position; 4]>,
     pub game_over: bool,
+    pub game_paused: bool,
 }
 
 impl GlobalState {
@@ -195,11 +196,15 @@ impl GlobalState {
             playfield: [[BlockType::None; PLAYFIELD_WIDTH]; PLAYFIELD_HEIGHT],
             active_block: Block::get_random(),
             game_over: false,
+            projection_blocks: None,
+            game_paused: false,
         }
     }
 
     fn rotate_block(&mut self) -> Self {
         self.active_block = self.active_block.rotate(&self.playfield);
+
+        self.get_projection();
 
         self.to_owned()
     }
@@ -210,7 +215,41 @@ impl GlobalState {
         };
 
         self.active_block = self.active_block.descend(&self.playfield);
+        self.get_projection();
         self.to_owned()
+    }
+
+    fn get_projection(&mut self) {
+        let mut transformations = self.active_block.blocks.clone();
+
+        for point in transformations.iter() {
+            if point.0 == (PLAYFIELD_HEIGHT - 1) as i8 {
+                return;
+            }
+        }
+
+        loop {
+            for p in transformations.iter_mut() {
+                p.0 += 1;
+            }
+            let mut complete = false;
+
+            for point in transformations.iter() {
+                if point.0 == (PLAYFIELD_HEIGHT - 1) as i8
+                    || !matches!(
+                        self.playfield[(point.0 + 1) as usize][point.1 as usize],
+                        BlockType::None
+                    )
+                {
+                    complete = true;
+                    break;
+                }
+            }
+            if complete {
+                self.projection_blocks = Some(transformations);
+                break;
+            }
+        }
     }
 
     fn full_descend_block(&mut self) -> Self {
@@ -225,11 +264,13 @@ impl GlobalState {
 
     fn move_block_left(&mut self) -> Self {
         self.active_block = self.active_block.move_left(&self.playfield);
+        self.get_projection();
         self.to_owned()
     }
 
     fn move_block_right(&mut self) -> Self {
         self.active_block = self.active_block.move_right(&self.playfield);
+        self.get_projection();
 
         self.to_owned()
     }
@@ -319,7 +360,8 @@ fn App() -> impl IntoView {
 
     view! {
       <div class:container>
-        <h1>"Tetris"</h1>
+        <h1 class="title">"RUSTRIS"</h1>
+        <p>"Tetris built in Rust!"</p>
         <Game />
       </div>
     }
@@ -332,13 +374,16 @@ fn Game() -> impl IntoView {
     let block_place_timer = Rc::new(Cell::new(0));
 
     // interval for block descension
-    let block_descend_interval = use_interval_fn(
+    // wrap it in a reference counter so that we can move a copy into each of the event listener
+    // closures
+    let block_descend_interval = Rc::new(use_interval_fn(
         move || {
             set_state.set(state.get().descend_block());
         },
         500,
-    );
+    ));
 
+    let block_descend_clone = Rc::clone(&block_descend_interval);
     let _ = use_event_listener(
         document().body(),
         keydown,
@@ -351,25 +396,38 @@ fn Game() -> impl IntoView {
                 return;
             }
 
-            if &evt.key() == "ArrowUp" {
-                set_state.set(s.rotate_block());
+            if !s.game_paused {
+                if &evt.key() == "ArrowUp" {
+                    set_state.set(s.rotate_block());
+                }
+
+                if &evt.key() == "ArrowDown" {
+                    (block_descend_clone.pause)();
+                    set_state.set(s.descend_block());
+                }
+
+                if &evt.key() == "ArrowRight" {
+                    set_state.set(s.move_block_right());
+                }
+
+                if &evt.key() == "ArrowLeft" {
+                    set_state.set(s.move_block_left());
+                }
+
+                if &evt.key() == " " {
+                    set_state.set(s.full_descend_block());
+                }
             }
 
-            if &evt.key() == "ArrowDown" {
-                (block_descend_interval.pause)();
-                set_state.set(s.descend_block());
-            }
-
-            if &evt.key() == "ArrowRight" {
-                set_state.set(s.move_block_right());
-            }
-
-            if &evt.key() == "ArrowLeft" {
-                set_state.set(s.move_block_left());
-            }
-
-            if &evt.key() == " " {
-                set_state.set(s.full_descend_block());
+            if &evt.key() == "Escape" {
+                if state.get().game_paused {
+                    logging::log!("Game unpaused.");
+                    (block_descend_clone.resume)();
+                } else {
+                    logging::log!("Game paused.");
+                    (block_descend_clone.pause)();
+                }
+                set_state.write().game_paused = !state.get().game_paused;
             }
         },
     );
@@ -378,7 +436,7 @@ fn Game() -> impl IntoView {
         document().body(),
         keyup,
         move |evt: leptos::ev::KeyboardEvent| {
-            if &evt.key() == "ArrowDown" {
+            if &evt.key() == "ArrowDown" && !state.get().game_paused {
                 (block_descend_interval.resume)();
             }
         },
@@ -402,7 +460,8 @@ fn Game() -> impl IntoView {
     );
 
     view! {
-      <div class:playfield>
+      <div class="playfield">
+        {move || if state.get().game_paused { Some(view! { <PauseScreen /> }) } else { None }}
         {move || {
           state
             .get()
@@ -452,6 +511,25 @@ fn Game() -> impl IntoView {
                                     }
                                       .into_any(),
                                   )
+                                } else if state.get().projection_blocks.is_some()
+                                  && state
+                                    .get()
+                                    .projection_blocks
+                                    .unwrap()
+                                    .contains(&Position(r_i as i8, c_i as i8))
+                                {
+                                  Some(
+                                    view! {
+                                      <div
+                                        class="projection"
+                                        style=(
+                                          "background-color",
+                                          move || get_color(active_block.block_type),
+                                        )
+                                      ></div>
+                                    }
+                                      .into_any(),
+                                  )
                                 } else {
                                   None
                                 }
@@ -469,6 +547,15 @@ fn Game() -> impl IntoView {
             })
             .collect_view()
         }}
+      </div>
+    }
+}
+
+#[component]
+fn PauseScreen() -> impl IntoView {
+    view! {
+      <div class="pause-container">
+        <p class="pause-text">Game Paused</p>
       </div>
     }
 }
