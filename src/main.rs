@@ -1,4 +1,7 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use leptos::{
     ev::{keydown, keyup},
@@ -238,6 +241,8 @@ impl GlobalState {
             .iter()
             .for_each(|point| self.playfield[point.0 as usize][point.1 as usize] = block_type);
 
+        self.update_rows();
+
         if self.check_game_over() {
             self.game_over = true;
         } else {
@@ -261,6 +266,33 @@ impl GlobalState {
         }
 
         false
+    }
+
+    fn update_rows(&mut self) -> Self {
+        let mut r = PLAYFIELD_HEIGHT - 1;
+
+        while r >= 4 {
+            let row_incomplete = self.playfield[r]
+                .iter()
+                .any(|cell| matches!(cell, BlockType::None));
+
+            if !row_incomplete {
+                self.shift_down_from_row(r);
+            } else {
+                r -= 1;
+            }
+        }
+
+        self.to_owned()
+    }
+
+    fn shift_down_from_row(&mut self, row: usize) {
+        let mut r = row;
+        while r >= 4 {
+            self.playfield[r] = self.playfield[r - 1];
+            r -= 1;
+        }
+        self.playfield[r] = [BlockType::None; PLAYFIELD_WIDTH];
     }
 
     fn check_game_over(&self) -> bool {
@@ -297,7 +329,7 @@ fn App() -> impl IntoView {
 fn Game() -> impl IntoView {
     let (state, set_state) = signal(GlobalState::new());
 
-    let block_place_timer = Rc::new(RefCell::new(0));
+    let block_place_timer = Rc::new(Cell::new(0));
 
     // interval for block descension
     let block_descend_interval = use_interval_fn(
@@ -353,18 +385,17 @@ fn Game() -> impl IntoView {
     );
 
     // interval to check for collisions
-    let block_place_timer_clone = Rc::clone(&block_place_timer);
     let _ = use_interval_fn(
         move || {
             if state.get().check_collision() {
-                *block_place_timer_clone.borrow_mut() += 1;
+                block_place_timer.set(block_place_timer.get() + 1);
 
-                if *block_place_timer_clone.borrow() == 5 {
+                if block_place_timer.get() == 5 {
                     set_state.set(state.get().place_block());
-                    *block_place_timer_clone.borrow_mut() = 0;
+                    block_place_timer.set(0);
                 }
             } else {
-                *block_place_timer_clone.borrow_mut() = 0;
+                block_place_timer.set(0);
             }
         },
         100,
